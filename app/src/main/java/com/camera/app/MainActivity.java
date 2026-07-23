@@ -1,7 +1,12 @@
 package com.camera.app;
 
 import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.projection.MediaProjection;
+import android.media.projection.MediaProjectionManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
@@ -31,13 +36,20 @@ public class MainActivity extends AppCompatActivity {
     private static final String SIGNALING_URL = "wss://signaling-server-71q2.onrender.com";
 
     private static final int PERMISSION_REQUEST_CODE = 100;
+    private static final int SCREEN_CAPTURE_REQUEST_CODE = 200;
 
     private TextView statusText;
     private EditText roomIdInput;
     private Button shareButton;
+    private Button screenShareButton;
 
     private String roomId = "oda1";
     private boolean sharing = false;
+    private boolean screenShareMode = false;
+
+    private MediaProjectionManager mediaProjectionManager;
+    private Intent screenCaptureData;
+    private int screenCaptureResultCode;
 
     private EglBase eglBase;
     private PeerConnectionFactory peerConnectionFactory;
@@ -60,22 +72,55 @@ public class MainActivity extends AppCompatActivity {
         statusText = (TextView) findViewById(R.id.statusText);
         roomIdInput = (EditText) findViewById(R.id.roomIdInput);
         shareButton = (Button) findViewById(R.id.shareButton);
+        screenShareButton = (Button) findViewById(R.id.screenShareButton);
+
+        mediaProjectionManager =
+                (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
 
         shareButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (!sharing) {
+                    screenShareMode = false;
                     roomId = roomIdInput.getText().toString().trim();
                     if (roomId.isEmpty()) roomId = "oda1";
                     checkPermissionsAndStart();
                 }
             }
         });
+
+        screenShareButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!sharing) {
+                    screenShareMode = true;
+                    roomId = roomIdInput.getText().toString().trim();
+                    if (roomId.isEmpty()) roomId = "oda1";
+                    Intent captureIntent = mediaProjectionManager.createScreenCaptureIntent();
+                    startActivityForResult(captureIntent, SCREEN_CAPTURE_REQUEST_CODE);
+                }
+            }
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == SCREEN_CAPTURE_REQUEST_CODE) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                screenCaptureResultCode = resultCode;
+                screenCaptureData = data;
+                checkPermissionsAndStart();
+            } else {
+                screenShareMode = false;
+                Toast.makeText(this, "Ekran paylaşımı izni verilmedi", Toast.LENGTH_LONG).show();
+            }
+        }
     }
 
     private void checkPermissionsAndStart() {
         List<String> needed = new ArrayList<String>();
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+        if (!screenShareMode && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
             needed.add(Manifest.permission.CAMERA);
         }
@@ -110,13 +155,27 @@ public class MainActivity extends AppCompatActivity {
 
     private void startSharing() {
         sharing = true;
-        shareButton.setText("Paylaşılıyor...");
+        if (screenShareMode) {
+            screenShareButton.setText("Ekran paylaşılıyor...");
+            startForegroundServiceCompat();
+        } else {
+            shareButton.setText("Paylaşılıyor...");
+        }
         setStatus("WebRTC başlatılıyor...");
 
         initWebRTC();
         startCapture();
         startAudioCapture();
         connectSignaling();
+    }
+
+    private void startForegroundServiceCompat() {
+        Intent serviceIntent = new Intent(this, ScreenShareService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
     }
 
     private void initWebRTC() {
@@ -139,9 +198,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startCapture() {
-        videoCapturer = createCameraCapturer();
+        videoCapturer = screenShareMode ? createScreenCapturer() : createCameraCapturer();
         if (videoCapturer == null) {
-            setStatus("Kamera bulunamadı");
+            setStatus(screenShareMode ? "Ekran yakalama başlatılamadı" : "Kamera bulunamadı");
             return;
         }
 
@@ -150,9 +209,36 @@ public class MainActivity extends AppCompatActivity {
 
         videoSource = peerConnectionFactory.createVideoSource(videoCapturer.isScreencast());
         videoCapturer.initialize(surfaceTextureHelper, this, videoSource.getCapturerObserver());
-        videoCapturer.startCapture(1280, 720, 30);
+
+        if (screenShareMode) {
+            // Ekran boyutları cihazdan cihaza değiştiği için sabit 720p yerine
+            // makul bir varsayılan çözünürlükle başlatıyoruz.
+            videoCapturer.startCapture(720, 1280, 30);
+        } else {
+            videoCapturer.startCapture(1280, 720, 30);
+        }
 
         videoTrack = peerConnectionFactory.createVideoTrack("video_track", videoSource);
+    }
+
+    private VideoCapturer createScreenCapturer() {
+        if (screenCaptureData == null) {
+            return null;
+        }
+        return new ScreenCapturerAndroid(
+                screenCaptureData,
+                new MediaProjection.Callback() {
+                    @Override
+                    public void onStop() {
+                        Log.i(TAG, "Ekran yakalama durduruldu");
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                setStatus("Ekran paylaşımı durdu");
+                            }
+                        });
+                    }
+                });
     }
 
     private void startAudioCapture() {
@@ -404,5 +490,8 @@ public class MainActivity extends AppCompatActivity {
         if (audioSource != null) audioSource.dispose();
         if (peerConnection != null) peerConnection.close();
         if (wsClient != null) wsClient.close();
+        if (screenShareMode) {
+            stopService(new Intent(this, ScreenShareService.class));
+        }
     }
 }

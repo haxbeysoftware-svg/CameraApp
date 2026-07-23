@@ -44,6 +44,8 @@ public class MainActivity extends AppCompatActivity {
     private VideoCapturer videoCapturer;
     private VideoSource videoSource;
     private VideoTrack videoTrack;
+    private AudioSource audioSource;
+    private AudioTrack audioTrack;
     private PeerConnection peerConnection;
     private WebSocketClient wsClient;
 
@@ -113,6 +115,7 @@ public class MainActivity extends AppCompatActivity {
 
         initWebRTC();
         startCapture();
+        startAudioCapture();
         connectSignaling();
     }
 
@@ -150,6 +153,16 @@ public class MainActivity extends AppCompatActivity {
         videoCapturer.startCapture(1280, 720, 30);
 
         videoTrack = peerConnectionFactory.createVideoTrack("video_track", videoSource);
+    }
+
+    private void startAudioCapture() {
+        MediaConstraints audioConstraints = new MediaConstraints();
+        audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair("googEchoCancellation", "true"));
+        audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair("googAutoGainControl", "true"));
+        audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair("googNoiseSuppression", "true"));
+
+        audioSource = peerConnectionFactory.createAudioSource(audioConstraints);
+        audioTrack = peerConnectionFactory.createAudioTrack("audio_track", audioSource);
     }
 
     private VideoCapturer createCameraCapturer() {
@@ -233,6 +246,9 @@ public class MainActivity extends AppCompatActivity {
         });
 
         peerConnection.addTrack(videoTrack);
+        if (audioTrack != null) {
+            peerConnection.addTrack(audioTrack);
+        }
     }
 
     private void createOffer() {
@@ -385,7 +401,8 @@ public class MainActivity extends AppCompatActivity {
         try {
             if (videoCapturer != null) videoCapturer.stopCapture();
         } catch (Exception ignored) {}
+        if (audioSource != null) audioSource.dispose();
         if (peerConnection != null) peerConnection.close();
         if (wsClient != null) wsClient.close();
     }
-                  }
+}

@@ -1,497 +1,70 @@
 package com.camera.app;
 
-import android.Manifest;
-import android.app.Activity;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.Service;
 import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.media.projection.MediaProjection;
-import android.media.projection.MediaProjectionManager;
 import android.os.Build;
-import android.os.Bundle;
-import android.util.Log;
-import android.view.View;
-import android.widget.Button;
-import android.widget.EditText;
-import android.widget.TextView;
-import android.widget.Toast;
+import android.os.IBinder;
 
-import androidx.appcompat.app.AppCompatActivity;
-import androidx.appcompat.widget.Toolbar;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
+import androidx.annotation.Nullable;
+import androidx.core.app.NotificationCompat;
 
-import org.json.JSONObject;
-import org.java_websocket.client.WebSocketClient;
-import org.java_websocket.handshake.ServerHandshake;
-import org.webrtc.*;
+/**
+ * Android 10+ (API 29) itibarıyla MediaProjection (ekran yakalama) yalnızca
+ * bir foreground service çalışırken başlatılabilir/sürdürülebilir.
+ * Bu servis sadece bildirimi ayakta tutmak için var, başka bir iş yapmıyor.
+ */
+public class ScreenShareService extends Service {
 
-import java.net.URI;
-import java.util.ArrayList;
-import java.util.List;
-
-public class MainActivity extends AppCompatActivity {
-
-    private static final String TAG = "CameraApp";
-
-    private static final String SIGNALING_URL = "wss://signaling-server-71q2.onrender.com";
-
-    private static final int PERMISSION_REQUEST_CODE = 100;
-    private static final int SCREEN_CAPTURE_REQUEST_CODE = 200;
-
-    private TextView statusText;
-    private EditText roomIdInput;
-    private Button shareButton;
-    private Button screenShareButton;
-
-    private String roomId = "oda1";
-    private boolean sharing = false;
-    private boolean screenShareMode = false;
-
-    private MediaProjectionManager mediaProjectionManager;
-    private Intent screenCaptureData;
-    private int screenCaptureResultCode;
-
-    private EglBase eglBase;
-    private PeerConnectionFactory peerConnectionFactory;
-    private VideoCapturer videoCapturer;
-    private VideoSource videoSource;
-    private VideoTrack videoTrack;
-    private AudioSource audioSource;
-    private AudioTrack audioTrack;
-    private PeerConnection peerConnection;
-    private WebSocketClient wsClient;
+    private static final String CHANNEL_ID = "screen_share_channel";
+    private static final int NOTIFICATION_ID = 1001;
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
-
-        Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
-        setSupportActionBar(toolbar);
-
-        statusText = (TextView) findViewById(R.id.statusText);
-        roomIdInput = (EditText) findViewById(R.id.roomIdInput);
-        shareButton = (Button) findViewById(R.id.shareButton);
-        screenShareButton = (Button) findViewById(R.id.screenShareButton);
-
-        mediaProjectionManager =
-                (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-
-        shareButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (!sharing) {
-                    screenShareMode = false;
-                    roomId = roomIdInput.getText().toString().trim();
-                    if (roomId.isEmpty()) roomId = "oda1";
-                    checkPermissionsAndStart();
-                }
-            }
-        });
-
-        screenShareButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (!sharing) {
-                    screenShareMode = true;
-                    roomId = roomIdInput.getText().toString().trim();
-                    if (roomId.isEmpty()) roomId = "oda1";
-                    Intent captureIntent = mediaProjectionManager.createScreenCaptureIntent();
-                    startActivityForResult(captureIntent, SCREEN_CAPTURE_REQUEST_CODE);
-                }
-            }
-        });
+    public void onCreate() {
+        super.onCreate();
+        createNotificationChannelIfNeeded();
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == SCREEN_CAPTURE_REQUEST_CODE) {
-            if (resultCode == Activity.RESULT_OK && data != null) {
-                screenCaptureResultCode = resultCode;
-                screenCaptureData = data;
-                checkPermissionsAndStart();
-            } else {
-                screenShareMode = false;
-                Toast.makeText(this, "Ekran paylaşımı izni verilmedi", Toast.LENGTH_LONG).show();
-            }
-        }
-    }
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Ekran paylaşılıyor")
+                .setContentText("Ekranınız Monitor uygulamasına aktarılıyor")
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .setOngoing(true)
+                .build();
 
-    private void checkPermissionsAndStart() {
-        List<String> needed = new ArrayList<String>();
-        if (!screenShareMode && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-                != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.CAMERA);
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.RECORD_AUDIO);
-        }
-
-        if (!needed.isEmpty()) {
-            ActivityCompat.requestPermissions(this,
-                    needed.toArray(new String[0]), PERMISSION_REQUEST_CODE);
+        if (Build.VERSION.SDK_INT >= 34) {
+            // Android 14+ (API 34) foregroundServiceType belirtilmesini zorunlu kılıyor.
+            // Build.VERSION_CODES.UPSIDE_DOWN_CAKE ve ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            // sabitleri yerine ham sayısal değerleri kullanıyoruz; böylece proje compileSdk 34'ün
+            // altında olsa bile derleme hatası vermiyor (bu sabitler yalnızca compileSdk>=34 ile bulunabilir).
+            startForeground(NOTIFICATION_ID, notification, 32 /* FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION */);
         } else {
-            startSharing();
+            startForeground(NOTIFICATION_ID, notification);
         }
+
+        return START_NOT_STICKY;
     }
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            boolean allGranted = true;
-            for (int r : grantResults) {
-                if (r != PackageManager.PERMISSION_GRANTED) allGranted = false;
-            }
-            if (allGranted) {
-                startSharing();
-            } else {
-                Toast.makeText(this, "Kamera izni olmadan çalışamaz", Toast.LENGTH_LONG).show();
-            }
-        }
-    }
-
-    private void startSharing() {
-        sharing = true;
-        if (screenShareMode) {
-            screenShareButton.setText("Ekran paylaşılıyor...");
-            startForegroundServiceCompat();
-        } else {
-            shareButton.setText("Paylaşılıyor...");
-        }
-        setStatus("WebRTC başlatılıyor...");
-
-        initWebRTC();
-        startCapture();
-        startAudioCapture();
-        connectSignaling();
-    }
-
-    private void startForegroundServiceCompat() {
-        Intent serviceIntent = new Intent(this, ScreenShareService.class);
+    private void createNotificationChannelIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
-        }
-    }
-
-    private void initWebRTC() {
-        eglBase = EglBase.create();
-
-        PeerConnectionFactory.InitializationOptions initOptions =
-                PeerConnectionFactory.InitializationOptions.builder(this)
-                        .createInitializationOptions();
-        PeerConnectionFactory.initialize(initOptions);
-
-        VideoEncoderFactory encoderFactory =
-                new DefaultVideoEncoderFactory(eglBase.getEglBaseContext(), true, true);
-        VideoDecoderFactory decoderFactory =
-                new DefaultVideoDecoderFactory(eglBase.getEglBaseContext());
-
-        peerConnectionFactory = PeerConnectionFactory.builder()
-                .setVideoEncoderFactory(encoderFactory)
-                .setVideoDecoderFactory(decoderFactory)
-                .createPeerConnectionFactory();
-    }
-
-    private void startCapture() {
-        videoCapturer = screenShareMode ? createScreenCapturer() : createCameraCapturer();
-        if (videoCapturer == null) {
-            setStatus(screenShareMode ? "Ekran yakalama başlatılamadı" : "Kamera bulunamadı");
-            return;
-        }
-
-        SurfaceTextureHelper surfaceTextureHelper =
-                SurfaceTextureHelper.create("CaptureThread", eglBase.getEglBaseContext());
-
-        videoSource = peerConnectionFactory.createVideoSource(videoCapturer.isScreencast());
-        videoCapturer.initialize(surfaceTextureHelper, this, videoSource.getCapturerObserver());
-
-        if (screenShareMode) {
-            // Ekran boyutları cihazdan cihaza değiştiği için sabit 720p yerine
-            // makul bir varsayılan çözünürlükle başlatıyoruz.
-            videoCapturer.startCapture(720, 1280, 30);
-        } else {
-            videoCapturer.startCapture(1280, 720, 30);
-        }
-
-        videoTrack = peerConnectionFactory.createVideoTrack("video_track", videoSource);
-    }
-
-    private VideoCapturer createScreenCapturer() {
-        if (screenCaptureData == null) {
-            return null;
-        }
-        return new ScreenCapturerAndroid(
-                screenCaptureData,
-                new MediaProjection.Callback() {
-                    @Override
-                    public void onStop() {
-                        Log.i(TAG, "Ekran yakalama durduruldu");
-                        runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                setStatus("Ekran paylaşımı durdu");
-                            }
-                        });
-                    }
-                });
-    }
-
-    private void startAudioCapture() {
-        MediaConstraints audioConstraints = new MediaConstraints();
-        audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair("googEchoCancellation", "true"));
-        audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair("googAutoGainControl", "true"));
-        audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair("googNoiseSuppression", "true"));
-
-        audioSource = peerConnectionFactory.createAudioSource(audioConstraints);
-        audioTrack = peerConnectionFactory.createAudioTrack("audio_track", audioSource);
-    }
-
-    private VideoCapturer createCameraCapturer() {
-        Camera2Enumerator enumerator = new Camera2Enumerator(this);
-        String[] deviceNames = enumerator.getDeviceNames();
-
-        for (String name : deviceNames) {
-            if (enumerator.isBackFacing(name)) {
-                VideoCapturer capturer = enumerator.createCapturer(name, null);
-                if (capturer != null) return capturer;
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    "Ekran Paylaşımı",
+                    NotificationManager.IMPORTANCE_LOW);
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
             }
         }
-        for (String name : deviceNames) {
-            if (enumerator.isFrontFacing(name)) {
-                VideoCapturer capturer = enumerator.createCapturer(name, null);
-                if (capturer != null) return capturer;
-            }
-        }
+    }
+
+    @Nullable
+    @Override
+    public IBinder onBind(Intent intent) {
         return null;
     }
-
-    private void switchCamera() {
-        if (videoCapturer instanceof CameraVideoCapturer) {
-            ((CameraVideoCapturer) videoCapturer).switchCamera(null);
-        }
-    }
-
-    private List<PeerConnection.IceServer> getIceServers() {
-        List<PeerConnection.IceServer> iceServers = new ArrayList<PeerConnection.IceServer>();
-        iceServers.add(PeerConnection.IceServer.builder("stun:stun.relay.metered.ca:80").createIceServer());
-        iceServers.add(PeerConnection.IceServer.builder("turn:global.relay.metered.ca:80")
-                .setUsername("6e19a374f95004d5aa0269ac")
-                .setPassword("03EFYItjIl2Lt1uv")
-                .createIceServer());
-        iceServers.add(PeerConnection.IceServer.builder("turn:global.relay.metered.ca:80?transport=tcp")
-                .setUsername("6e19a374f95004d5aa0269ac")
-                .setPassword("03EFYItjIl2Lt1uv")
-                .createIceServer());
-        iceServers.add(PeerConnection.IceServer.builder("turn:global.relay.metered.ca:443")
-                .setUsername("6e19a374f95004d5aa0269ac")
-                .setPassword("03EFYItjIl2Lt1uv")
-                .createIceServer());
-        iceServers.add(PeerConnection.IceServer.builder("turns:global.relay.metered.ca:443?transport=tcp")
-                .setUsername("6e19a374f95004d5aa0269ac")
-                .setPassword("03EFYItjIl2Lt1uv")
-                .createIceServer());
-
-        return iceServers;
-    }
-
-    private void createPeerConnection() {
-        PeerConnection.RTCConfiguration rtcConfig =
-                new PeerConnection.RTCConfiguration(getIceServers());
-
-        peerConnection = peerConnectionFactory.createPeerConnection(rtcConfig, new PeerConnection.Observer() {
-            @Override
-            public void onIceCandidate(IceCandidate candidate) {
-                sendIceCandidate(candidate);
-            }
-
-            @Override public void onSignalingChange(PeerConnection.SignalingState signalingState) {}
-
-            @Override
-            public void onIceConnectionChange(final PeerConnection.IceConnectionState iceConnectionState) {
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        setStatus("Bağlantı durumu: " + iceConnectionState);
-                    }
-                });
-            }
-
-            @Override public void onIceConnectionReceivingChange(boolean b) {}
-            @Override public void onIceGatheringChange(PeerConnection.IceGatheringState iceGatheringState) {}
-            @Override public void onIceCandidatesRemoved(IceCandidate[] iceCandidates) {}
-            @Override public void onAddStream(MediaStream mediaStream) {}
-            @Override public void onRemoveStream(MediaStream mediaStream) {}
-            @Override public void onDataChannel(DataChannel dataChannel) {}
-            @Override public void onRenegotiationNeeded() {}
-            @Override public void onAddTrack(RtpReceiver rtpReceiver, MediaStream[] mediaStreams) {}
-        });
-
-        peerConnection.addTrack(videoTrack);
-        if (audioTrack != null) {
-            peerConnection.addTrack(audioTrack);
-        }
-    }
-
-    private void createOffer() {
-        MediaConstraints constraints = new MediaConstraints();
-        peerConnection.createOffer(new SimpleSdpObserver() {
-            @Override
-            public void onCreateSuccess(SessionDescription sdp) {
-                peerConnection.setLocalDescription(new SimpleSdpObserver(), sdp);
-                sendSdp("offer", sdp.description);
-            }
-        }, constraints);
-    }
-
-    private void connectSignaling() {
-        try {
-            wsClient = new WebSocketClient(new URI(SIGNALING_URL)) {
-                @Override
-                public void onOpen(ServerHandshake handshakedata) {
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            setStatus("Sunucuya bağlandı, oda: " + roomId);
-                        }
-                    });
-                    sendJoin();
-                }
-
-                @Override
-                public void onMessage(String message) {
-                    handleSignalMessage(message);
-                }
-
-                @Override
-                public void onClose(int code, final String reason, boolean remote) {
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            setStatus("Bağlantı kapandı: " + reason);
-                        }
-                    });
-                }
-
-                @Override
-                public void onError(final Exception ex) {
-                    Log.e(TAG, "WebSocket hata", ex);
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            setStatus("Hata: " + ex.getMessage());
-                        }
-                    });
-                }
-            };
-            wsClient.connect();
-        } catch (Exception e) {
-            Log.e(TAG, "Signaling bağlantı hatası", e);
-            setStatus("Signaling bağlantı hatası");
-        }
-    }
-
-    private void sendJoin() {
-        try {
-            JSONObject obj = new JSONObject();
-            obj.put("type", "join");
-            obj.put("room", roomId);
-            obj.put("role", "camera");
-            wsClient.send(obj.toString());
-        } catch (Exception e) {
-            Log.e(TAG, "join gönderilemedi", e);
-        }
-    }
-
-    private void sendSdp(String type, String description) {
-        try {
-            JSONObject obj = new JSONObject();
-            obj.put("type", type);
-            obj.put("sdp", description);
-            wsClient.send(obj.toString());
-        } catch (Exception e) {
-            Log.e(TAG, "sdp gönderilemedi", e);
-        }
-    }
-
-    private void sendIceCandidate(IceCandidate candidate) {
-        try {
-            JSONObject obj = new JSONObject();
-            obj.put("type", "ice-candidate");
-            obj.put("candidate", candidate.sdp);
-            obj.put("sdpMid", candidate.sdpMid);
-            obj.put("sdpMLineIndex", candidate.sdpMLineIndex);
-            wsClient.send(obj.toString());
-        } catch (Exception e) {
-            Log.e(TAG, "ice gönderilemedi", e);
-        }
-    }
-
-    private void handleSignalMessage(String message) {
-        try {
-            JSONObject obj = new JSONObject(message);
-            String type = obj.getString("type");
-
-            if (type.equals("peer-joined")) {
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        setStatus("Monitor bağlandı, bağlantı kuruluyor...");
-                    }
-                });
-                if (peerConnection == null) {
-                    createPeerConnection();
-                }
-                createOffer();
-
-            } else if (type.equals("answer")) {
-                String sdp = obj.getString("sdp");
-                peerConnection.setRemoteDescription(new SimpleSdpObserver(),
-                        new SessionDescription(SessionDescription.Type.ANSWER, sdp));
-
-            } else if (type.equals("ice-candidate")) {
-                IceCandidate candidate = new IceCandidate(
-                        obj.getString("sdpMid"),
-                        obj.getInt("sdpMLineIndex"),
-                        obj.getString("candidate"));
-                if (peerConnection != null) {
-                    peerConnection.addIceCandidate(candidate);
-                }
-
-            } else if (type.equals("switch-camera")) {
-                switchCamera();
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "mesaj işlenemedi: " + message, e);
-        }
-    }
-
-    private void setStatus(String s) {
-        statusText.setText(s);
-    }
-
-    private static class SimpleSdpObserver implements SdpObserver {
-        @Override public void onCreateSuccess(SessionDescription sessionDescription) {}
-        @Override public void onSetSuccess() {}
-        @Override public void onCreateFailure(String s) { Log.e("SDP", "create fail: " + s); }
-        @Override public void onSetFailure(String s) { Log.e("SDP", "set fail: " + s); }
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        try {
-            if (videoCapturer != null) videoCapturer.stopCapture();
-        } catch (Exception ignored) {}
-        if (audioSource != null) audioSource.dispose();
-        if (peerConnection != null) peerConnection.close();
-        if (wsClient != null) wsClient.close();
-        if (screenShareMode) {
-            stopService(new Intent(this, ScreenShareService.class));
-        }
-    }
-          }
+}

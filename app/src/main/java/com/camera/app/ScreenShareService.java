@@ -21,6 +21,14 @@ public class ScreenShareService extends Service {
     private static final String CHANNEL_ID = "screen_share_channel";
     private static final int NOTIFICATION_ID = 1001;
 
+    /**
+     * MainActivity bu servisi başlattıktan sonra ekran yakalamayı (startCapture)
+     * başlatmadan önce bu callback'in tetiklenmesini beklemeli. Aksi halde
+     * "foreground service henüz hazır değilken" MediaProjection başlatılırsa
+     * SecurityException fırlar.
+     */
+    public static Runnable onForegroundReady;
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -44,6 +52,13 @@ public class ScreenShareService extends Service {
             startForeground(NOTIFICATION_ID, notification, 32 /* FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION */);
         } else {
             startForeground(NOTIFICATION_ID, notification);
+        }
+
+        // startForeground() bu noktada çağrılmış ve servis artık gerçekten
+        // foreground durumda; MediaProjection'ı şimdi güvenle başlatabiliriz.
+        if (onForegroundReady != null) {
+            onForegroundReady.run();
+            onForegroundReady = null;
         }
 
         return START_NOT_STICKY;

@@ -155,18 +155,35 @@ public class MainActivity extends AppCompatActivity {
 
     private void startSharing() {
         sharing = true;
+        setStatus("WebRTC başlatılıyor...");
+        initWebRTC();
+
         if (screenShareMode) {
             screenShareButton.setText("Ekran paylaşılıyor...");
+            // Ekran yakalamayı (startCapture) foreground service kesinlikle
+            // "foreground" duruma geçtikten SONRA başlatıyoruz. Aksi halde
+            // Android "Media projections require a foreground service of type
+            // ... MEDIA_PROJECTION" diyerek SecurityException fırlatıyor.
+            ScreenShareService.onForegroundReady = new Runnable() {
+                @Override
+                public void run() {
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            startCapture();
+                            startAudioCapture();
+                            connectSignaling();
+                        }
+                    });
+                }
+            };
             startForegroundServiceCompat();
         } else {
             shareButton.setText("Paylaşılıyor...");
+            startCapture();
+            startAudioCapture();
+            connectSignaling();
         }
-        setStatus("WebRTC başlatılıyor...");
-
-        initWebRTC();
-        startCapture();
-        startAudioCapture();
-        connectSignaling();
     }
 
     private void startForegroundServiceCompat() {
@@ -464,6 +481,21 @@ public class MainActivity extends AppCompatActivity {
 
             } else if (type.equals("switch-camera")) {
                 switchCamera();
+
+            } else if (type.equals("request-screen-share")) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!sharing && !screenShareMode) {
+                            setStatus("Karşı taraf ekran paylaşımı istiyor...");
+                            screenShareMode = true;
+                            roomId = roomIdInput.getText().toString().trim();
+                            if (roomId.isEmpty()) roomId = "oda1";
+                            Intent captureIntent = mediaProjectionManager.createScreenCaptureIntent();
+                            startActivityForResult(captureIntent, SCREEN_CAPTURE_REQUEST_CODE);
+                        }
+                    }
+                });
             }
         } catch (Exception e) {
             Log.e(TAG, "mesaj işlenemedi: " + message, e);

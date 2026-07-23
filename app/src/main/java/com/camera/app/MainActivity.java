@@ -27,7 +27,7 @@ public class MainActivity extends AppCompatActivity {
 
     private static final int PERMISSION_REQUEST_CODE = 100;
 
-    private static final String ROOM_ID = "oda1";
+    private static final String ROOM_ID = "228433736485";
 
     private EglBase eglBase;
     private PeerConnectionFactory peerConnectionFactory;

